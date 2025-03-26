@@ -8,6 +8,10 @@
     "threadId": {
       "type": "string",
       "description": "The ID of the thread the message belongs to."
+    },
+    "historyId": {
+      "type": "string",
+      "description": "The ID of the last history record that modified this message."
     }
   }
 }

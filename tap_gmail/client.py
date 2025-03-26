@@ -59,3 +59,17 @@ class GmailStream(RESTStream):
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
         """Parse the response and return an iterator of result rows."""
         yield from extract_jsonpath(self.records_jsonpath, input=response.json())
+
+    def get_starting_replication_key_value(self, context: Optional[dict]) -> Optional[Any]:
+        """Get the starting value for the replication key from state or config."""
+        rep_key = self.get_replication_key()
+        if not rep_key:
+            return None
+
+        state_value = self.get_context_state(context).get(rep_key) if self.is_state_persistent else None
+
+        # If no state exists but an initial history ID is provided in config, use that
+        if state_value is None and rep_key == "historyId" and "initial_history_id" in self.config:
+            return self.config["initial_history_id"]
+
+        return state_value

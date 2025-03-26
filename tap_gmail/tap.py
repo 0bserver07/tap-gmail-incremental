@@ -42,6 +42,19 @@ class TapGmail(Tap):
             description="Include messages from SPAM and TRASH in the results.",
             default=False,
         ),
+        # Add new configuration options for incremental fetching
+        th.Property(
+            "use_incremental",
+            th.BooleanType,
+            description="Enable incremental fetching using Gmail history API",
+            default=True,
+        ),
+        th.Property(
+            "initial_history_id",
+            th.StringType,
+            description="Initial history ID to start fetching from if no state exists",
+            required=False,
+        ),
     ).to_dict()
 
     def discover_streams(self) -> List[Stream]:
