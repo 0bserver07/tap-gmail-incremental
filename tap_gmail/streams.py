@@ -39,16 +39,16 @@ class MessageListStream(GmailStream):
         params = super().get_url_params(context, next_page_token)
         params["includeSpamTrash"]=self.config["messages.include_spam_trash"]
         params["q"]=self.config.get("messages.q")
-        
+
         # Add historyId for incremental fetching if available and enabled
         if self.config.get("use_incremental", False) and self.get_starting_replication_key_value(context):
             # Switch to the history endpoint for incremental fetching
             self._path = "/gmail/v1/users/" + self.config["user_id"] + "/history"
             params["startHistoryId"] = self.get_starting_replication_key_value(context)
             params["historyTypes"] = "messageAdded,messageChanged,labelAdded,labelRemoved"
-        
+
         return params
-    
+
     def _batch_get_messages(self, message_ids: list) -> list:
         """Get messages in batch to reduce API calls."""
         if not message_ids:
@@ -63,11 +63,11 @@ class MessageListStream(GmailStream):
             client_secret=self.config["oauth_credentials"]["client_secret"],
         )
         service = build('gmail', 'v1', credentials=credentials)
-        
+
         # Split into batches of BATCH_SIZE
         batches = [message_ids[i:i + BATCH_SIZE] for i in range(0, len(message_ids), BATCH_SIZE)]
         messages = []
-        
+
         for batch in batches:
             try:
                 # Use messages.batchGet for efficiency
@@ -88,58 +88,38 @@ class MessageListStream(GmailStream):
                         messages.append(msg)
                     except Exception as e:
                         self.logger.error(f"Error fetching message {msg_id}: {str(e)}")
-        
+
         return messages
 
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
         """Parse the response and return an iterator of result rows."""
         data = response.json()
-        
+
         # Handle response from history endpoint differently from messages endpoint
         if "history" in data:
             seen_ids = set()
             message_ids = []
-            history_map = {}  # Map message IDs to their history IDs
-            
-            # First collect all message IDs and their history IDs
-            for history in data.get("history", []):
-                history_id = history.get("id")
-                for msg_type in ["messagesAdded", "messagesChanged", "labelsAdded", "labelsRemoved"]:
-                    for msg in history.get(msg_type, []):
-                        if "message" in msg and msg["message"]["id"] not in seen_ids:
-                            msg_id = msg["message"]["id"]
-                            seen_ids.add(msg_id)
-                            message_ids.append(msg_id)
-                            history_map[msg_id] = history_id
-            
-            # Fetch messages in batch
+
+            # Extract message IDs from history items
+            for history_item in data.get("history", []):
+                # Get messages from all relevant history types
+                for msg_type in ["messages", "added", "messages", "messagesAdded"]:
+                    for msg in history_item.get(msg_type, []):
+                        if msg.get("id") not in seen_ids:
+                            message_ids.append(msg.get("id"))
+                            seen_ids.add(msg.get("id"))
+
+            # Batch fetch the actual messages
             messages = self._batch_get_messages(message_ids)
-            
-            # Yield messages with their history IDs
             for msg in messages:
-                msg_id = msg.get("id")
-                if msg_id in history_map:
-                    yield {
-                        "id": msg_id,
-                        "threadId": msg.get("threadId", ""),
-                        "historyId": history_map[msg_id],
-                        # Add other relevant message fields here
-                        "snippet": msg.get("snippet", ""),
-                        "labelIds": msg.get("labelIds", []),
-                        "internalDate": msg.get("internalDate", "")
-                    }
+                if msg:
+                    msg["historyId"] = history_item.get("id")  # Add historyId to message
+                    yield msg
         else:
-            # Default behavior for regular messages endpoint
-            messages = extract_jsonpath(self.records_jsonpath, input=data)
-            message_ids = [msg["id"] for msg in messages]
-            
-            # Fetch full message details in batch
-            detailed_messages = self._batch_get_messages(message_ids)
-            
-            for msg in detailed_messages:
-                if "historyId" in data:
-                    msg["historyId"] = data["historyId"]
-                yield msg
+            # For regular message list endpoint
+            message_ids = [msg.get("id") for msg in extract_jsonpath(self.records_jsonpath, data)]
+            messages = self._batch_get_messages(message_ids)
+            yield from (msg for msg in messages if msg)
 
 
 class MessagesStream(GmailStream):
