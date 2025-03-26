@@ -45,7 +45,7 @@ class MessageListStream(GmailStream):
             # Switch to the history endpoint for incremental fetching
             self._path = "/gmail/v1/users/" + self.config["user_id"] + "/history"
             params["startHistoryId"] = self.get_starting_replication_key_value(context)
-            params["historyTypes"] = "messageAdded,messageChanged,labelAdded,labelRemoved"
+            params["historyTypes"] = "messageAdded"  # Just new messages
 
         return params
 
@@ -95,31 +95,37 @@ class MessageListStream(GmailStream):
         """Parse the response and return an iterator of result rows."""
         data = response.json()
 
-        # Handle response from history endpoint differently from messages endpoint
         if "history" in data:
-            seen_ids = set()
+            # 1. Create message-to-history mapping FIRST
+            message_history_map = {}
             message_ids = []
 
-            # Extract message IDs from history items
             for history_item in data.get("history", []):
-                # Get messages from all relevant history types
-                for msg_type in ["messages", "added", "messages", "messagesAdded"]:
-                    for msg in history_item.get(msg_type, []):
-                        if msg.get("id") not in seen_ids:
-                            message_ids.append(msg.get("id"))
-                            seen_ids.add(msg.get("id"))
+                history_id = history_item.get("id")
+                for msg in history_item.get("messagesAdded", []):
+                    if "message" in msg:
+                        msg_id = msg["message"]["id"]
+                        message_history_map[msg_id] = history_id
+                        message_ids.append(msg_id)
 
-            # Batch fetch the actual messages
-            messages = self._batch_get_messages(message_ids)
-            for msg in messages:
-                if msg:
-                    msg["historyId"] = history_item.get("id")  # Add historyId to message
-                    yield msg
+            # 2. Batch fetch ONLY after we have ALL mappings
+            if message_ids:
+                messages = self._batch_get_messages(message_ids)
+                # 3. Attach CORRECT history ID to EACH message
+                for msg in messages:
+                    if msg and msg.get("id") in message_history_map:
+                        msg["historyId"] = message_history_map[msg.get("id")]
+                        yield msg
         else:
-            # For regular message list endpoint
+            # Regular message list endpoint
             message_ids = [msg.get("id") for msg in extract_jsonpath(self.records_jsonpath, data)]
-            messages = self._batch_get_messages(message_ids)
-            yield from (msg for msg in messages if msg)
+            if message_ids:
+                messages = self._batch_get_messages(message_ids)
+                for msg in messages:
+                    if msg:
+                        if "historyId" in data:
+                            msg["historyId"] = data["historyId"]
+                        yield msg
 
 
 class MessagesStream(GmailStream):
