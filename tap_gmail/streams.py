@@ -38,14 +38,34 @@ class MessageListStream(GmailStream):
     ) -> Dict[str, Any]:
         params = super().get_url_params(context, next_page_token)
         params["includeSpamTrash"]=self.config["messages.include_spam_trash"]
-        params["q"]=self.config.get("messages.q")
+        if self.config.get("messages.q"):
+            params["q"]=self.config.get("messages.q")
 
         # Add historyId for incremental fetching if available and enabled
-        if self.config.get("use_incremental", False) and self.get_starting_replication_key_value(context):
+        use_incremental = self.config.get("use_incremental", False)
+        history_id = self.get_starting_replication_key_value(context)
+        
+        if use_incremental and history_id:
+            self.logger.info(f"Using incremental sync with history API. Starting from historyId: {history_id}")
             # Switch to the history endpoint for incremental fetching
             self._path = "/gmail/v1/users/" + self.config["user_id"] + "/history"
-            params["startHistoryId"] = self.get_starting_replication_key_value(context)
+            params["startHistoryId"] = history_id
             params["historyTypes"] = "messageAdded"  # Just new messages
+        else:
+            self.logger.info("Using standard message list endpoint (not incremental or no historyId)")
+            self._path = "/gmail/v1/users/" + self.config["user_id"] + "/messages"
+            
+            # Check if we have a timestamp filter to apply
+            if self.config.get("messages.after_timestamp"):
+                timestamp = self.config.get("messages.after_timestamp")
+                self.logger.info(f"Filtering messages after timestamp: {timestamp}")
+                
+                # Add timestamp filter to the query
+                timestamp_query = f"after:{int(timestamp)//1000}"
+                if params.get("q"):
+                    params["q"] = f"{params['q']} {timestamp_query}"
+                else:
+                    params["q"] = timestamp_query
 
         return params
 
@@ -94,38 +114,71 @@ class MessageListStream(GmailStream):
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
         """Parse the response and return an iterator of result rows."""
         data = response.json()
+        self.logger.info(f"Response data type: {'history API' if 'history' in data else 'message list'}")
 
         if "history" in data:
             # 1. Create message-to-history mapping FIRST
             message_history_map = {}
             message_ids = []
+            latest_history_id = None
 
             for history_item in data.get("history", []):
                 history_id = history_item.get("id")
+                if history_id and (latest_history_id is None or int(history_id) > int(latest_history_id)):
+                    latest_history_id = history_id
+                
+                # Look for messages in messagesAdded
                 for msg in history_item.get("messagesAdded", []):
                     if "message" in msg:
                         msg_id = msg["message"]["id"]
                         message_history_map[msg_id] = history_id
                         message_ids.append(msg_id)
 
+            # Update state with latest history ID if available
+            if latest_history_id:
+                self.logger.info(f"Updating state with latest historyId: {latest_history_id}")
+                self.state = {self.replication_key: latest_history_id}
+
             # 2. Batch fetch ONLY after we have ALL mappings
             if message_ids:
+                self.logger.info(f"Found {len(message_ids)} messages in history API response")
                 messages = self._batch_get_messages(message_ids)
                 # 3. Attach CORRECT history ID to EACH message
                 for msg in messages:
                     if msg and msg.get("id") in message_history_map:
                         msg["historyId"] = message_history_map[msg.get("id")]
                         yield msg
+            else:
+                self.logger.info("No messages found in history API response")
         else:
             # Regular message list endpoint
             message_ids = [msg.get("id") for msg in extract_jsonpath(self.records_jsonpath, data)]
             if message_ids:
+                self.logger.info(f"Found {len(message_ids)} messages in message list response")
                 messages = self._batch_get_messages(message_ids)
+                
+                # Track the latest historyId to update state
+                latest_history_id = None
+                
                 for msg in messages:
                     if msg:
+                        # Add historyId from response data if available
                         if "historyId" in data:
                             msg["historyId"] = data["historyId"]
+                        
+                        # Track the largest historyId we've seen
+                        if msg.get("historyId") and (
+                            latest_history_id is None or 
+                            int(msg["historyId"]) > int(latest_history_id)
+                        ):
+                            latest_history_id = msg["historyId"]
+                        
                         yield msg
+                
+                # Update state with latest history ID if available
+                if latest_history_id:
+                    self.logger.info(f"Updating state with latest historyId: {latest_history_id}")
+                    self.state = {self.replication_key: latest_history_id}
 
 
 class MessagesStream(GmailStream):
