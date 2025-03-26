@@ -46,12 +46,12 @@ class MessageListStream(GmailStream):
             history_id = self.get_starting_replication_key_value(context)
             if not history_id:
                 self.logger.error("Incremental sync is enabled but no historyId is provided. Please set 'initial_history_id' in your config.")
-                # Optionally, you can raise an exception here if desired:
-                # raise ValueError("Missing initial_history_id for incremental sync.")
             self.logger.info(f"Using incremental sync with history API. Starting from historyId: {history_id}")
             self._path = "/gmail/v1/users/" + self.config["user_id"] + "/history"
             params["startHistoryId"] = history_id
-            params["historyTypes"] = "messageAdded,messageChanged,labelAdded,labelRemoved"
+            # Limit to only new messages and restrict results per page.
+            params["historyTypes"] = "messageAdded"
+            params["maxResults"] = 100
         else:
             self.logger.info("Using standard message list endpoint (not incremental)")
             self._path = "/gmail/v1/users/" + self.config["user_id"] + "/messages"
