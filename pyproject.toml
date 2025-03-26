@@ -4,20 +4,15 @@ version = "0.0.0"
 description = "`tap-gmail` is a Singer tap for Gmail, built with the Meltano SDK for Singer Taps."
 readme = "README.md"
 authors = ["Ken Payne"]
-keywords = [
-    "ELT",
-    "Gmail",
-]
+keywords = ["ELT", "Gmail"]
 license = "Apache 2.0"
-packages = [
-    { include = "tap_gmail" },
-]
+packages = [{ include = "tap_gmail" }]
 
 
 [tool.poetry.dependencies]
 python = "<3.12,>=3.7.1"
 requests = "^2.25.1"
-singer-sdk = "^0.24.0"
+singer-sdk = "^0.40.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.5"
@@ -31,7 +26,7 @@ isort = "^5.10.1"
 
 [tool.isort]
 profile = "black"
-multi_line_output = 3 # Vertical Hanging Indent
+multi_line_output = 3   # Vertical Hanging Indent
 src_paths = "tap_gmail"
 
 [build-system]
