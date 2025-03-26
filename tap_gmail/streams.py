@@ -37,29 +37,29 @@ class MessageListStream(GmailStream):
         self, context: Optional[dict], next_page_token: Optional[Any]
     ) -> Dict[str, Any]:
         params = super().get_url_params(context, next_page_token)
-        params["includeSpamTrash"]=self.config["messages.include_spam_trash"]
+        params["includeSpamTrash"] = self.config["messages.include_spam_trash"]
         if self.config.get("messages.q"):
-            params["q"]=self.config.get("messages.q")
+            params["q"] = self.config.get("messages.q")
 
-        # Add historyId for incremental fetching if available and enabled
-        use_incremental = self.config.get("use_incremental", False)
-        history_id = self.get_starting_replication_key_value(context)
-        
-        if use_incremental and history_id:
+        # Use incremental fetching exclusively based on history API when enabled
+        if self.config.get("use_incremental", False):
+            history_id = self.get_starting_replication_key_value(context)
+            if not history_id:
+                self.logger.error("Incremental sync is enabled but no historyId is provided. Please set 'initial_history_id' in your config.")
+                # Optionally, you can raise an exception here if desired:
+                # raise ValueError("Missing initial_history_id for incremental sync.")
             self.logger.info(f"Using incremental sync with history API. Starting from historyId: {history_id}")
-            # Switch to the history endpoint for incremental fetching
             self._path = "/gmail/v1/users/" + self.config["user_id"] + "/history"
             params["startHistoryId"] = history_id
-            params["historyTypes"] = "messageAdded"  # Just new messages
+            params["historyTypes"] = "messageAdded,messageChanged,labelAdded,labelRemoved"
         else:
-            self.logger.info("Using standard message list endpoint (not incremental or no historyId)")
+            self.logger.info("Using standard message list endpoint (not incremental)")
             self._path = "/gmail/v1/users/" + self.config["user_id"] + "/messages"
-            
+
             # Check if we have a timestamp filter to apply
             if self.config.get("messages.after_timestamp"):
                 timestamp = self.config.get("messages.after_timestamp")
                 self.logger.info(f"Filtering messages after timestamp: {timestamp}")
-                
                 # Add timestamp filter to the query
                 timestamp_query = f"after:{int(timestamp)//1000}"
                 if params.get("q"):
@@ -126,7 +126,7 @@ class MessageListStream(GmailStream):
                 history_id = history_item.get("id")
                 if history_id and (latest_history_id is None or int(history_id) > int(latest_history_id)):
                     latest_history_id = history_id
-                
+
                 # Look for messages in messagesAdded
                 for msg in history_item.get("messagesAdded", []):
                     if "message" in msg:
@@ -156,25 +156,25 @@ class MessageListStream(GmailStream):
             if message_ids:
                 self.logger.info(f"Found {len(message_ids)} messages in message list response")
                 messages = self._batch_get_messages(message_ids)
-                
+
                 # Track the latest historyId to update state
                 latest_history_id = None
-                
+
                 for msg in messages:
                     if msg:
                         # Add historyId from response data if available
                         if "historyId" in data:
                             msg["historyId"] = data["historyId"]
-                        
+
                         # Track the largest historyId we've seen
                         if msg.get("historyId") and (
-                            latest_history_id is None or 
+                            latest_history_id is None or
                             int(msg["historyId"]) > int(latest_history_id)
                         ):
                             latest_history_id = msg["historyId"]
-                        
+
                         yield msg
-                
+
                 # Update state with latest history ID if available
                 if latest_history_id:
                     self.logger.info(f"Updating state with latest historyId: {latest_history_id}")
